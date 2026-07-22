@@ -76,6 +76,9 @@ pnpm dev
 
 ### Manual Testing (Local)
 
+> **Use `pnpm start` (not `pnpm dev`) when testing Telegram webhooks locally.** Run
+> `pnpm build && pnpm start` instead — with `pnpm dev`, the webhook won't work.
+
 Telegram needs to reach your webhook over HTTPS, so expose localhost with a tunnel
 (e.g. `ngrok http 3000` or `cloudflared tunnel --url http://localhost:3000`), and set
 `NEXT_PUBLIC_APP_URL` to that tunnel URL while testing.
