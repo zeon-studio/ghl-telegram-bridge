@@ -1,0 +1,163 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  locationId   String   @id @map("location_id")
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  expiresAt    BigInt   @map("expires_at")
+  userId       String?  @map("user_id")
+  companyId    String?  @map("company_id")
+  locationName String?  @map("location_name")
+  email        String?
+  phone        String?
+  address      String?
+  city         String?
+  country      String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("sessions")
+}
+
+model TelegramBot {
+  id            String   @id @default(cuid())
+  locationId    String   @map("location_id")
+  botToken      String   @map("bot_token")
+  telegramBotId String   @map("telegram_bot_id")
+  botUsername   String   @map("bot_username")
+  displayName   String?  @map("display_name")
+  webhookSecret String   @unique @map("webhook_secret")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  contacts ContactMapping[]
+  messages MessageLog[]
+
+  @@index([locationId])
+  @@map("telegram_bots")
+}
+
+model ContactMapping {
+  id                String   @id @default(cuid())
+  botId             String   @map("bot_id")
+  locationId        String   @map("location_id")
+  telegramChatId    String   @map("telegram_chat_id")
+  telegramUserId    String?  @map("telegram_user_id")
+  telegramUsername  String?  @map("telegram_username")
+  telegramName      String?  @map("telegram_name")
+  ghlContactId      String   @map("ghl_contact_id")
+  ghlConversationId String?  @map("ghl_conversation_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  bot      TelegramBot  @relation(fields: [botId], references: [id], onDelete: Cascade)
+  messages MessageLog[]
+
+  @@unique([botId, telegramChatId])
+  @@index([locationId])
+  @@map("contact_mappings")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageStatus {
+  SENT
+  FAILED
+}
+
+model MessageLog {
+  id                String           @id @default(cuid())
+  botId             String           @map("bot_id")
+  locationId        String           @map("location_id")
+  contactMappingId  String?          @map("contact_mapping_id")
+  direction         MessageDirection
+  contentType       String           @map("content_type")
+  textContent       String?          @map("text_content")
+  mediaUrl          String?          @map("media_url")
+  telegramMessageId String?          @map("telegram_message_id")
+  ghlMessageId      String?          @map("ghl_message_id")
+  status            MessageStatus
+  errorMessage      String?          @map("error_message")
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  bot            TelegramBot     @relation(fields: [botId], references: [id], onDelete: Cascade)
+  contactMapping ContactMapping? @relation(fields: [contactMappingId], references: [id])
+
+  @@index([locationId])
+  @@index([botId, createdAt])
+  @@map("message_logs")
+}
+
+model TelegramPhoneAccount {
+  id               String   @id @default(cuid())
+  locationId       String   @map("location_id")
+  phoneNumber      String   @map("phone_number")
+  sessionString    String   @map("session_string")
+  telegramUserId   String   @map("telegram_user_id")
+  telegramUsername String?  @map("telegram_username")
+  displayName      String?  @map("display_name")
+  isActive         Boolean  @default(true) @map("is_active")
+  needsAttention   Boolean  @default(false) @map("needs_attention")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  contacts PhoneContactMapping[]
+  messages PhoneMessageLog[]
+
+  @@index([locationId])
+  @@map("telegram_phone_accounts")
+}
+
+model PhoneContactMapping {
+  id                String   @id @default(cuid())
+  phoneAccountId    String   @map("phone_account_id")
+  locationId        String   @map("location_id")
+  telegramChatId    String   @map("telegram_chat_id")
+  telegramChatType  String   @map("telegram_chat_type")
+  telegramChatName  String?  @map("telegram_chat_name")
+  ghlContactId      String   @map("ghl_contact_id")
+  ghlConversationId String?  @map("ghl_conversation_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  phoneAccount TelegramPhoneAccount @relation(fields: [phoneAccountId], references: [id], onDelete: Cascade)
+  messages     PhoneMessageLog[]
+
+  @@unique([phoneAccountId, telegramChatId])
+  @@index([locationId])
+  @@map("phone_contact_mappings")
+}
+
+model PhoneMessageLog {
+  id                String           @id @default(cuid())
+  phoneAccountId    String           @map("phone_account_id")
+  locationId        String           @map("location_id")
+  contactMappingId  String?          @map("contact_mapping_id")
+  direction         MessageDirection
+  contentType       String           @map("content_type")
+  textContent       String?          @map("text_content")
+  mediaUrl          String?          @map("media_url")
+  telegramMessageId String?          @map("telegram_message_id")
+  ghlMessageId      String?          @map("ghl_message_id")
+  status            MessageStatus
+  errorMessage      String?          @map("error_message")
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  phoneAccount   TelegramPhoneAccount @relation(fields: [phoneAccountId], references: [id], onDelete: Cascade)
+  contactMapping PhoneContactMapping? @relation(fields: [contactMappingId], references: [id])
+
+  @@index([locationId])
+  @@index([phoneAccountId, createdAt])
+  @@map("phone_message_logs")
+}
