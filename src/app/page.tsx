@@ -10,9 +10,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Telegram for GHL – Two-Way Telegram Messaging in Your Inbox",
+  title: "Telegram Bridge – Two-Way Telegram Messaging in Your Inbox",
   description:
-    "Connect Telegram bots or a phone-number account to your GoHighLevel sub-account and get two-way messaging right inside your native GHL Inbox.",
+    "Connect Telegram bots or a phone-number account to your sub-account and get two-way messaging right inside your native Inbox.",
 };
 
 const STEPS = [
@@ -29,12 +29,12 @@ const STEPS = [
   {
     n: 3,
     title: "Contacts sync automatically",
-    desc: "New GHL contacts are created the moment someone messages your bot.",
+    desc: "New contacts are created the moment someone messages your bot.",
   },
   {
     n: 4,
     title: "Reply from your Inbox",
-    desc: "Two-way sync — replies from your GHL Inbox go straight back to Telegram.",
+    desc: "Two-way sync — replies from your Inbox go straight back to Telegram.",
   },
 ];
 
@@ -52,11 +52,11 @@ export default function LandingPage() {
       <div className="max-w-2xl w-full flex flex-col items-center text-center gap-8 z-10">
         <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight">
           Bring Telegram into <br className="hidden sm:inline" />
-          <span className="text-primary">your GHL Inbox</span>
+          <span className="text-primary">your Inbox</span>
         </h1>
 
         <p className="text-muted-foreground text-lg max-w-lg">
-          Connect Telegram to your GoHighLevel sub-account — one or more bots,
+          Connect Telegram to your sub-account — one or more bots,
           or a full account via phone number login. Messages from Telegram
           show up as a native conversation in your Inbox, and replies you send
           go straight back to Telegram — no separate app to check.
@@ -122,7 +122,7 @@ export default function LandingPage() {
         </div>
 
         <p className="text-sm text-muted-foreground mt-4">
-          Requires GoHighLevel sub-account access to connect
+          Requires sub-account access to connect
         </p>
 
         <footer className="mt-16 w-full flex items-center justify-center gap-6 pt-8 border-t text-sm text-muted-foreground">
@@ -138,7 +138,7 @@ export default function LandingPage() {
           >
             Terms of Service
           </Link>
-          <span>© 2026 Telegram for GHL</span>
+          <span>© 2026 Telegram Bridge</span>
         </footer>
       </div>
     </main>

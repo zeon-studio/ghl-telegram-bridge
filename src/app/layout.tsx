@@ -9,8 +9,8 @@ const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Telegram for GHL",
-  description: "Two-way Telegram messaging inside your GoHighLevel Inbox.",
+  title: "Telegram Bridge",
+  description: "Two-way Telegram messaging inside your Inbox.",
   icons: {
     icon: "/icon.png",
   },

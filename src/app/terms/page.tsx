@@ -2,7 +2,7 @@ import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 
 export const metadata = {
-  title: "Terms of Service | Telegram for GHL",
+  title: "Terms of Service | Telegram Bridge",
 };
 
 export default function TermsPage() {
@@ -28,15 +28,15 @@ export default function TermsPage() {
           
           <h2 className="text-2xl font-semibold text-foreground mt-8 mb-4">1. Acceptance of Terms</h2>
           <p>
-            By installing and using Telegram for GHL, you agree to be bound by these Terms of Service.
+            By installing and using Telegram Bridge, you agree to be bound by these Terms of Service.
             If you do not agree, please do not use the application.
           </p>
 
           <h2 className="text-2xl font-semibold text-foreground mt-8 mb-4">2. Description of Service</h2>
           <p>
-            The Service connects your GoHighLevel sub-account to one or more Telegram bots, or to a
+            The Service connects your sub-account to one or more Telegram bots, or to a
             Telegram account via phone-number login (a &quot;Phone Account&quot;), enabling two-way
-            messaging between Telegram and your GHL Inbox. We provide the software &quot;as is&quot;
+            messaging between Telegram and your Inbox. We provide the software &quot;as is&quot;
             and make no guarantees regarding uptime or specific performance outcomes.
           </p>
 

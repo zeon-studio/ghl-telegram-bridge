@@ -24,7 +24,7 @@ export function Onboarding() {
     {
       n: "3",
       title: "Reply from your Inbox",
-      desc: "Messages from that bot now show up in your GHL Inbox as a Telegram conversation — reply right there.",
+      desc: "Messages from that bot now show up in your Inbox as a Telegram conversation — reply right there.",
     },
   ];
 
@@ -70,7 +70,7 @@ export function Onboarding() {
         </div>
 
         <p className="mt-6 text-xs text-center text-muted-foreground bg-background/40 py-2 rounded-md border border-primary/5">
-          New Telegram contacts are created in GHL automatically the moment they message your bot.
+          New Telegram contacts are created automatically the moment they message your bot.
         </p>
       </CardContent>
     </Card>

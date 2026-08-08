@@ -2,7 +2,7 @@ import { buttonVariants } from "@/components/ui/button";
 import Link from "next/link";
 
 export const metadata = {
-  title: "Privacy Policy | Telegram for GHL",
+  title: "Privacy Policy | Telegram Bridge",
 };
 
 export default function PrivacyPage() {
@@ -33,7 +33,7 @@ export default function PrivacyPage() {
           </h2>
           <p>
             This Privacy Policy explains how we collect, use, and protect your
-            information when you use Telegram for GHL. We are committed to
+            information when you use Telegram Bridge. We are committed to
             ensuring that your privacy is protected and that we comply with all
             relevant data protection laws.
           </p>
@@ -56,14 +56,14 @@ export default function PrivacyPage() {
               <strong className="text-foreground">Telegram Bot &amp; Message Data:</strong>{" "}
               The Telegram bot tokens you connect, and the Telegram user ID, username, and name
               of anyone who messages a connected bot, along with the messages relayed between
-              Telegram and your GHL Inbox.
+              Telegram and your Inbox.
             </li>
             <li>
               <strong className="text-foreground">Phone Account Data:</strong>{" "}
               If you connect a Telegram account via phone-number login, we store that account&apos;s
               phone number and the session credential used to keep it connected, along with the
               Telegram user ID, username, and name of anyone who messages that account in a DM,
-              group, or channel, and the messages relayed between Telegram and your GHL Inbox.
+              group, or channel, and the messages relayed between Telegram and your Inbox.
             </li>
           </ul>
 
@@ -72,7 +72,7 @@ export default function PrivacyPage() {
           </h2>
           <p>
             We use your information exclusively to relay messages between Telegram and your
-            GoHighLevel Inbox, and to create or match GHL contacts for people who message your
+            Inbox, and to create or match contacts for people who message your
             bots or Phone Accounts.
             <strong className="text-foreground">
               {" "}
@@ -96,7 +96,7 @@ export default function PrivacyPage() {
           </h2>
           <p>
             If you have any questions about this Privacy Policy, please reach out through the
-            support channel listed in this app&apos;s GoHighLevel Marketplace listing.
+            support channel listed in this app&apos;s Marketplace listing.
           </p>
         </div>
       </div>
