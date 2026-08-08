@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getActiveSession, handleApiError } from "@/lib/api-utils";
 import { startAccount, stopAccount, deleteAccount } from "@/lib/telegram/phoneAccountManager";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -23,7 +24,7 @@ export async function PATCH(
 
     if (typeof body.isActive === "boolean" && body.isActive !== existing.isActive) {
       if (body.isActive) {
-        await startAccount(id, existing.sessionString);
+        await startAccount(id, decryptSecret(existing.sessionString));
       } else {
         await stopAccount(id);
       }

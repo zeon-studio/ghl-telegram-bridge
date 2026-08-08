@@ -4,7 +4,13 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Runtime queries go through Supabase's connection pooler (PgBouncer, port
+  // 6543). Migrations can't: PgBouncer runs in transaction mode, which has no
+  // support for the session-level statements Prisma Migrate issues. DIRECT_URL
+  // points at the database directly (port 5432) and is used only for migrate
+  // and introspection.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Session {
@@ -96,6 +102,12 @@ model MessageLog {
 
   @@index([locationId])
   @@index([botId, createdAt])
+  // Inbound dedupe runs on every relayed message; without a leading botId +
+  // telegramMessageId index it scans every row ever logged for that bot.
+  @@index([botId, telegramMessageId])
+  // Retention pruning filters on createdAt alone, which no other index leads
+  // with — and this is precisely the table that grows without bound.
+  @@index([createdAt])
   @@map("message_logs")
 }
 
@@ -159,5 +171,8 @@ model PhoneMessageLog {
 
   @@index([locationId])
   @@index([phoneAccountId, createdAt])
+  // Mirrors the MessageLog indexes above — same dedupe and pruning queries.
+  @@index([phoneAccountId, telegramMessageId])
+  @@index([createdAt])
   @@map("phone_message_logs")
 }

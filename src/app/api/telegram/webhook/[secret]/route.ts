@@ -1,44 +1,91 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
+import type { TelegramBot } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import * as telegram from "@/lib/telegram/client";
 import { findOrCreateContactMapping } from "@/lib/ghl/contacts";
 import { pushInboundMessage, uploadMediaToGhl } from "@/lib/ghl/conversations";
 import { sessionStorage } from "@/lib/ghl/client";
+import { decryptSecret } from "@/lib/crypto";
+import { MediaTooLargeError, composeInboundText } from "@/lib/media-limits";
 
 export const runtime = "nodejs";
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ secret: string }> },
-): Promise<NextResponse> {
-  const { secret } = await params;
+interface MediaDescriptor {
+  contentType: string;
+  fileId: string;
+  size?: number;
+  fileName: string;
+  mimeType: string;
+}
 
-  const bot = await prisma.telegramBot.findUnique({ where: { webhookSecret: secret } });
-  if (!bot || !bot.isActive) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+/**
+ * Picks the one attachment we relay for this update, in the same precedence
+ * order the handler has always used. Collapsing the four near-identical
+ * branches into a descriptor keeps the size-guard logic in exactly one place
+ * below rather than repeated per media type.
+ */
+function describeMedia(message: telegram.TelegramMessage): MediaDescriptor | undefined {
+  if (message.photo && message.photo.length > 0) {
+    const largest = message.photo[message.photo.length - 1];
+    return {
+      contentType: "photo",
+      fileId: largest.file_id,
+      size: largest.file_size,
+      fileName: `telegram-photo-${message.message_id}.jpg`,
+      mimeType: "image/jpeg",
+    };
   }
-
-  const secretHeader = request.headers.get("x-telegram-bot-api-secret-token");
-  if (secretHeader !== bot.webhookSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (message.document) {
+    return {
+      contentType: "document",
+      fileId: message.document.file_id,
+      size: message.document.file_size,
+      fileName: message.document.file_name ?? `telegram-document-${message.message_id}`,
+      mimeType: message.document.mime_type ?? "application/octet-stream",
+    };
   }
-
-  const update = (await request.json()) as telegram.TelegramUpdate;
-  const message = update.message;
-  if (!message) {
-    return NextResponse.json({ ok: true });
+  if (message.voice) {
+    return {
+      contentType: "voice",
+      fileId: message.voice.file_id,
+      size: message.voice.file_size,
+      fileName: `telegram-voice-${message.message_id}.ogg`,
+      mimeType: message.voice.mime_type ?? "audio/ogg",
+    };
   }
+  if (message.video) {
+    return {
+      contentType: "video",
+      fileId: message.video.file_id,
+      size: message.video.file_size,
+      fileName: `telegram-video-${message.message_id}.mp4`,
+      mimeType: message.video.mime_type ?? "video/mp4",
+    };
+  }
+  return undefined;
+}
 
+async function processInboundMessage(
+  bot: TelegramBot,
+  message: telegram.TelegramMessage,
+): Promise<void> {
   const telegramMessageId = String(message.message_id);
 
-  const existingLog = await prisma.messageLog.findFirst({
-    where: { botId: bot.id, telegramMessageId, direction: "INBOUND", status: "SENT" },
-  });
-  if (existingLog) {
-    return NextResponse.json({ ok: true });
-  }
+  // Both reads depend only on values already in hand, so they go together
+  // rather than back to back — every round-trip to Postgres is on the critical
+  // path of relaying a message. Telegram redelivers an update if a previous
+  // attempt wasn't acknowledged; we now ack immediately (see POST), so the
+  // dedupe check mostly guards genuine duplicates rather than our own
+  // slowness, and its hit rate is low enough that fetching the session
+  // alongside it is very rarely wasted work.
+  const [existingLog, session] = await Promise.all([
+    prisma.messageLog.findFirst({
+      where: { botId: bot.id, telegramMessageId, direction: "INBOUND", status: "SENT" },
+    }),
+    sessionStorage.get(bot.locationId),
+  ]);
+  if (existingLog) return;
 
-  const session = await sessionStorage.get(bot.locationId);
   if (!session) {
     await prisma.messageLog.create({
       data: {
@@ -52,7 +99,7 @@ export async function POST(
         errorMessage: "GHL session expired — reconnect this location",
       },
     });
-    return NextResponse.json({ ok: true });
+    return;
   }
 
   try {
@@ -70,85 +117,45 @@ export async function POST(
       bot.displayName || bot.botUsername,
     );
 
-    let contentType = "text";
+    const media = describeMedia(message);
+    const contentType = media?.contentType ?? "text";
     let mediaUrl: string | undefined;
-    const attachmentUrls: string[] = [];
+    let mediaNotice: string | undefined;
 
-    if (message.photo && message.photo.length > 0) {
-      contentType = "photo";
-      const largest = message.photo[message.photo.length - 1];
-      const file = await telegram.getFile(bot.botToken, largest.file_id);
-      if (file.file_path) {
-        const buffer = await telegram.downloadFile(bot.botToken, file.file_path);
+    if (media) {
+      try {
+        const buffer = await telegram.downloadFileWithinLimit(
+          decryptSecret(bot.botToken),
+          media.fileId,
+          media.size,
+        );
         mediaUrl = await uploadMediaToGhl(
           buffer,
-          `telegram-photo-${message.message_id}.jpg`,
-          "image/jpeg",
+          media.fileName,
+          media.mimeType,
           bot.locationId,
           session.accessToken,
         );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.document) {
-      contentType = "document";
-      const file = await telegram.getFile(bot.botToken, message.document.file_id);
-      if (file.file_path) {
-        const buffer = await telegram.downloadFile(bot.botToken, file.file_path);
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          message.document.file_name ?? `telegram-document-${message.message_id}`,
-          message.document.mime_type ?? "application/octet-stream",
-          bot.locationId,
-          session.accessToken,
+      } catch (error) {
+        // An oversized attachment shouldn't lose the message — relay the
+        // text and tell the user where to find the file.
+        if (!(error instanceof MediaTooLargeError)) throw error;
+        mediaNotice = error.message;
+        console.warn(
+          `[Telegram Webhook] Skipped oversized ${media.contentType} on message ${telegramMessageId}:`,
+          error.message,
         );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.voice) {
-      contentType = "voice";
-      const file = await telegram.getFile(bot.botToken, message.voice.file_id);
-      if (file.file_path) {
-        const buffer = await telegram.downloadFile(bot.botToken, file.file_path);
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-voice-${message.message_id}.ogg`,
-          message.voice.mime_type ?? "audio/ogg",
-          bot.locationId,
-          session.accessToken,
-        );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.video) {
-      contentType = "video";
-      const file = await telegram.getFile(bot.botToken, message.video.file_id);
-      if (file.file_path) {
-        const buffer = await telegram.downloadFile(bot.botToken, file.file_path);
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-video-${message.message_id}.mp4`,
-          message.video.mime_type ?? "video/mp4",
-          bot.locationId,
-          session.accessToken,
-        );
-        attachmentUrls.push(mediaUrl);
       }
     }
 
-    // Falls back to a placeholder for Telegram message kinds we don't parse
-    // yet (stickers, polls, locations, video notes, ...) — without this,
-    // an unhandled type pushes to GHL with no text and no attachments,
-    // which shows up as a blank message in the Inbox instead of something
-    // staff can act on.
-    const text =
-      message.text ??
-      message.caption ??
-      (attachmentUrls.length === 0 ? "[Unsupported Telegram message type — check Telegram directly]" : undefined);
+    const text = composeInboundText(message.text ?? message.caption, mediaNotice, Boolean(mediaUrl));
 
     const { messageId } = await pushInboundMessage({
       contactId: mapping.ghlContactId,
       locationId: bot.locationId,
       accessToken: session.accessToken,
       text,
-      attachmentUrls: attachmentUrls.length > 0 ? attachmentUrls : undefined,
+      attachmentUrls: mediaUrl ? [mediaUrl] : undefined,
     });
 
     await prisma.messageLog.create({
@@ -181,6 +188,43 @@ export async function POST(
       },
     });
   }
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ secret: string }> },
+): Promise<NextResponse> {
+  const { secret } = await params;
+
+  const bot = await prisma.telegramBot.findUnique({ where: { webhookSecret: secret } });
+  if (!bot || !bot.isActive) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const secretHeader = request.headers.get("x-telegram-bot-api-secret-token");
+  if (secretHeader !== bot.webhookSecret) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const update = (await request.json()) as telegram.TelegramUpdate;
+  const message = update.message;
+  if (!message) {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Everything past authentication runs after the response is flushed.
+  // Relaying a message means a contact lookup, possibly a media download and
+  // re-upload, and a write to GHL — far too slow to hold Telegram's webhook
+  // connection open for on a 0.1 CPU instance. Doing it inline meant Telegram
+  // timed out, retried, and the retry re-did the same work, which is exactly
+  // the kind of pile-up a shared free instance can't absorb.
+  after(async () => {
+    try {
+      await processInboundMessage(bot, message);
+    } catch (error) {
+      console.error("[Telegram Webhook] Unhandled error while relaying message:", error);
+    }
+  });
 
   return NextResponse.json({ ok: true });
 }

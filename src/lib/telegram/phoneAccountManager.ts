@@ -13,6 +13,13 @@ import { buildPhoneClient, connectPhoneClient, logoutPhoneClient, warmEntityCach
 import { findOrCreatePhoneContactMapping } from "@/lib/ghl/phoneContacts";
 import { pushInboundMessage, uploadMediaToGhl } from "@/lib/ghl/conversations";
 import { sessionStorage } from "@/lib/ghl/client";
+import { decryptSecret, encryptSecret } from "@/lib/crypto";
+import {
+  MediaTooLargeError,
+  composeInboundText,
+  isOverMediaLimit,
+  normalizeSize,
+} from "@/lib/media-limits";
 import type { PendingLoginRecord } from "./pendingLogins";
 
 const globalForManager = globalThis as unknown as {
@@ -76,6 +83,15 @@ function resolveChatIdentity(chat: unknown): { chatType: string; chatName?: stri
  * silently hand a file-path string to uploadMediaToGhl's Buffer parameter.
  */
 async function downloadMessageMedia(message: Api.Message): Promise<Buffer | undefined> {
+  // Unlike the Bot API — which refuses to serve anything over 20 MB through
+  // getFile — MTProto will stream a multi-gigabyte file into this process.
+  // On a 512 MB instance that is an OOM kill for every tenant, not just this
+  // one, so the size has to be checked before the download starts.
+  const size = normalizeSize(message.file?.size);
+  if (isOverMediaLimit(size)) {
+    throw new MediaTooLargeError(size);
+  }
+
   const result = await message.downloadMedia();
   if (result === undefined) return undefined;
   if (Buffer.isBuffer(result)) return result;
@@ -85,41 +101,77 @@ async function downloadMessageMedia(message: Api.Message): Promise<Buffer | unde
   return undefined;
 }
 
+/**
+ * MTProto counterpart to the Bot API webhook's describeMedia (see
+ * app/api/telegram/webhook/[secret]/route.ts) — same shape and same
+ * precedence, so the two inbound paths read alike. teleproto's Message
+ * exposes the same photo/video/voice/document convenience getters as its
+ * GramJS parent (confirmed: Api.Message extends CustomMessage in
+ * node_modules/teleproto/tl/generated/api.d.ts, and CustomMessage declares
+ * these getters in node_modules/teleproto/tl/custom/message.d.ts). Unlike the
+ * Bot API version there's no fileId or size here: the download goes through
+ * the Message object itself, which also carries its own size.
+ */
+function describeMedia(
+  message: Api.Message,
+): { contentType: string; fileName: string; mimeType: string } | undefined {
+  if (message.photo) {
+    return {
+      contentType: "photo",
+      fileName: `telegram-phone-photo-${message.id}.jpg`,
+      mimeType: "image/jpeg",
+    };
+  }
+  if (message.video) {
+    return {
+      contentType: "video",
+      fileName: `telegram-phone-video-${message.id}.mp4`,
+      mimeType: "video/mp4",
+    };
+  }
+  if (message.voice) {
+    return {
+      contentType: "voice",
+      fileName: `telegram-phone-voice-${message.id}.ogg`,
+      mimeType: "audio/ogg",
+    };
+  }
+  if (message.document) {
+    return {
+      contentType: "document",
+      fileName: `telegram-phone-document-${message.id}`,
+      mimeType: "application/octet-stream",
+    };
+  }
+  return undefined;
+}
+
 async function handleInboundMessage(accountId: string, event: NewMessageEvent): Promise<void> {
   const account = await prisma.telegramPhoneAccount.findUnique({ where: { id: accountId } });
   if (!account || !account.isActive) return;
 
   const message = event.message;
   const chatId = String(message.chatId);
-  const chat = await message.getChat();
-  const { chatType, chatName } = resolveChatIdentity(chat);
-
   const telegramMessageId = String(message.id);
-
-  // TEMPORARY DIAGNOSTIC — remove once the media-relay issue is root-caused.
-  console.log("[PhoneAccountManager][DEBUG] message media check:", {
-    id: message.id,
-    hasMessageText: Boolean(message.message),
-    hasMedia: Boolean(message.media),
-    mediaClassName:
-      message.media && typeof message.media === "object" && "className" in message.media
-        ? (message.media as { className: string }).className
-        : undefined,
-    photo: Boolean(message.photo),
-    video: Boolean(message.video),
-    voice: Boolean(message.voice),
-    document: Boolean(message.document),
-  });
 
   // Dedupe on reconnect: teleproto can redeliver an update after a dropped
   // connection reconnects, same as Telegram's webhook redelivery for bots —
-  // mirrors the bot webhook's existing dedupe check.
-  const existingLog = await prisma.phoneMessageLog.findFirst({
-    where: { phoneAccountId: accountId, telegramMessageId, direction: "INBOUND", status: "SENT" },
-  });
+  // mirrors the bot webhook's existing dedupe check. Paired with the session
+  // read, which depends only on account.locationId, so the two round-trips
+  // overlap instead of running back to back.
+  const [existingLog, session] = await Promise.all([
+    prisma.phoneMessageLog.findFirst({
+      where: { phoneAccountId: accountId, telegramMessageId, direction: "INBOUND", status: "SENT" },
+    }),
+    sessionStorage.get(account.locationId),
+  ]);
   if (existingLog) return;
 
-  const session = await sessionStorage.get(account.locationId);
+  // Resolved after the dedupe check — getChat() is an MTProto round-trip, and
+  // a redelivered duplicate shouldn't pay for one.
+  const chat = await message.getChat();
+  const { chatType, chatName } = resolveChatIdentity(chat);
+
   if (!session) {
     await prisma.phoneMessageLog.create({
       data: {
@@ -145,83 +197,43 @@ async function handleInboundMessage(accountId: string, event: NewMessageEvent): 
       account.displayName || account.phoneNumber,
     );
 
-    let contentType = "text";
+    const media = describeMedia(message);
+    const contentType = media?.contentType ?? "text";
     let mediaUrl: string | undefined;
-    const attachmentUrls: string[] = [];
+    let mediaNotice: string | undefined;
 
-    // Mirrors the bot webhook's per-type media handling (lib/telegram/client.ts
-    // callers in the webhook route) so GHL gets a correctly-typed attachment
-    // instead of a generic blob — teleproto's Message exposes the same
-    // photo/video/voice/document convenience getters as its GramJS parent
-    // (confirmed: Api.Message extends CustomMessage in
-    // node_modules/teleproto/tl/generated/api.d.ts, and CustomMessage declares
-    // these getters in node_modules/teleproto/tl/custom/message.d.ts).
-    if (message.photo) {
-      const buffer = await downloadMessageMedia(message);
-      if (buffer) {
-        contentType = "photo";
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-phone-photo-${message.id}.jpg`,
-          "image/jpeg",
-          account.locationId,
-          session.accessToken,
+    if (media) {
+      try {
+        const buffer = await downloadMessageMedia(message);
+        if (buffer) {
+          mediaUrl = await uploadMediaToGhl(
+            buffer,
+            media.fileName,
+            media.mimeType,
+            account.locationId,
+            session.accessToken,
+          );
+        }
+      } catch (error) {
+        // An oversized attachment shouldn't lose the message — relay the text
+        // and point the user at Telegram for the file itself.
+        if (!(error instanceof MediaTooLargeError)) throw error;
+        mediaNotice = error.message;
+        console.warn(
+          `[PhoneAccountManager] Skipped oversized ${media.contentType} on message ${telegramMessageId}:`,
+          error.message,
         );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.video) {
-      const buffer = await downloadMessageMedia(message);
-      if (buffer) {
-        contentType = "video";
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-phone-video-${message.id}.mp4`,
-          "video/mp4",
-          account.locationId,
-          session.accessToken,
-        );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.voice) {
-      const buffer = await downloadMessageMedia(message);
-      if (buffer) {
-        contentType = "voice";
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-phone-voice-${message.id}.ogg`,
-          "audio/ogg",
-          account.locationId,
-          session.accessToken,
-        );
-        attachmentUrls.push(mediaUrl);
-      }
-    } else if (message.document) {
-      const buffer = await downloadMessageMedia(message);
-      if (buffer) {
-        contentType = "document";
-        mediaUrl = await uploadMediaToGhl(
-          buffer,
-          `telegram-phone-document-${message.id}`,
-          "application/octet-stream",
-          account.locationId,
-          session.accessToken,
-        );
-        attachmentUrls.push(mediaUrl);
       }
     }
 
-    const text =
-      message.message ||
-      (attachmentUrls.length === 0
-        ? "[Unsupported Telegram message type — check Telegram directly]"
-        : undefined);
+    const text = composeInboundText(message.message, mediaNotice, Boolean(mediaUrl));
 
     const { messageId } = await pushInboundMessage({
       contactId: mapping.ghlContactId,
       locationId: account.locationId,
       accessToken: session.accessToken,
       text,
-      attachmentUrls: attachmentUrls.length > 0 ? attachmentUrls : undefined,
+      attachmentUrls: mediaUrl ? [mediaUrl] : undefined,
     });
 
     await prisma.phoneMessageLog.create({
@@ -278,7 +290,7 @@ export async function boot(): Promise<void> {
   const accounts = await prisma.telegramPhoneAccount.findMany({ where: { isActive: true } });
   for (const account of accounts) {
     try {
-      await startAccount(account.id, account.sessionString);
+      await startAccount(account.id, decryptSecret(account.sessionString));
     } catch (error) {
       console.error(`[PhoneAccountManager] Failed to reconnect account ${account.id}:`, error);
       await prisma.telegramPhoneAccount.update({
@@ -343,7 +355,9 @@ export async function completeLogin(pending: PendingLoginRecord): Promise<{
     data: {
       locationId: pending.locationId,
       phoneNumber: pending.phoneNumber,
-      sessionString,
+      // Encrypted at rest — this string is standing access to the user's
+      // whole Telegram account, not a scoped token. See lib/crypto.ts.
+      sessionString: encryptSecret(sessionString),
       telegramUserId: String(me.id),
       telegramUsername: "username" in me ? (me.username ?? null) : null,
       displayName: null,

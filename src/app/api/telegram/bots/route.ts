@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { getMe, setWebhook } from "@/lib/telegram/client";
 import { getActiveSession, handleApiError } from "@/lib/api-utils";
+import { encryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -79,7 +80,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const bot = await prisma.telegramBot.create({
       data: {
         locationId,
-        botToken,
+        // Encrypted at rest — a bot token is enough to read and send every
+        // message the bot can see. See lib/crypto.ts.
+        botToken: encryptSecret(botToken),
         telegramBotId: String(me.id),
         botUsername: me.username ?? me.first_name,
         displayName: displayName || null,

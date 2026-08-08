@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { deleteWebhook } from "@/lib/telegram/client";
 import { getActiveSession, handleApiError } from "@/lib/api-utils";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -47,7 +48,7 @@ export async function DELETE(
     if (errorResponse) return errorResponse;
 
     try {
-      await deleteWebhook(bot.botToken);
+      await deleteWebhook(decryptSecret(bot.botToken));
     } catch (e) {
       console.error("[Bots] Failed to delete Telegram webhook (continuing):", e);
     }

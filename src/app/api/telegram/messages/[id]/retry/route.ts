@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import * as telegram from "@/lib/telegram/client";
 import { sessionStorage } from "@/lib/ghl/client";
 import { pushInboundMessage } from "@/lib/ghl/conversations";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -47,14 +48,15 @@ export async function POST(
         data: { status: "SENT", errorMessage: null, ghlMessageId: messageId },
       });
     } else {
+      const botToken = decryptSecret(log.bot.botToken);
       if (log.textContent) {
-        await telegram.sendMessage(log.bot.botToken, log.contactMapping.telegramChatId, log.textContent);
+        await telegram.sendMessage(botToken, log.contactMapping.telegramChatId, log.textContent);
       }
       if (log.mediaUrl) {
         if (/\.(jpe?g|png|gif|webp)$/i.test(log.mediaUrl)) {
-          await telegram.sendPhoto(log.bot.botToken, log.contactMapping.telegramChatId, log.mediaUrl);
+          await telegram.sendPhoto(botToken, log.contactMapping.telegramChatId, log.mediaUrl);
         } else {
-          await telegram.sendDocument(log.bot.botToken, log.contactMapping.telegramChatId, log.mediaUrl);
+          await telegram.sendDocument(botToken, log.contactMapping.telegramChatId, log.mediaUrl);
         }
       }
       await prisma.messageLog.update({

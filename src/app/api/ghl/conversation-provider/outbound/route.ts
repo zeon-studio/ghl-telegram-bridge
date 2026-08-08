@@ -5,6 +5,7 @@ import { sessionStorage } from "@/lib/ghl/client";
 import { updateMessageDeliveryStatus } from "@/lib/ghl/conversations";
 import { getClient } from "@/lib/telegram/phoneAccountManager";
 import { sendPhoneMessage, sendPhoneMedia } from "@/lib/telegram/phoneClient";
+import { decryptSecret } from "@/lib/crypto";
 
 export const runtime = "nodejs";
 
@@ -44,14 +45,15 @@ async function relayToBot(
   }
 
   try {
+    const botToken = decryptSecret(bot.botToken);
     if (text) {
-      await telegram.sendMessage(bot.botToken, mapping.telegramChatId, text);
+      await telegram.sendMessage(botToken, mapping.telegramChatId, text);
     }
     for (const url of attachments) {
       if (/\.(jpe?g|png|gif|webp)$/i.test(url)) {
-        await telegram.sendPhoto(bot.botToken, mapping.telegramChatId, url);
+        await telegram.sendPhoto(botToken, mapping.telegramChatId, url);
       } else {
-        await telegram.sendDocument(bot.botToken, mapping.telegramChatId, url);
+        await telegram.sendDocument(botToken, mapping.telegramChatId, url);
       }
     }
     if (!text && attachments.length === 0) {

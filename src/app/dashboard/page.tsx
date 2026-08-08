@@ -145,19 +145,29 @@ export default function DashboardPage() {
             </div>
             <BotList bots={bots} onToggleActive={handleToggleActive} onDelete={handleDelete} />
 
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Your Phone Accounts</h2>
-              <AddPhoneAccountDialog
-                locationId={session.locationId}
-                disabled={!phoneAccountsEnabled}
-                onAdded={(account) => setPhoneAccounts((prev) => [...prev, account])}
-              />
-            </div>
-            <PhoneAccountList
-              accounts={phoneAccounts}
-              onToggleActive={handleTogglePhoneActive}
-              onDelete={handleDeletePhoneAccount}
-            />
+            {/* Phone Accounts are a self-hosted-only feature — the hosted
+                marketplace build runs without TELEGRAM_API_ID/API_HASH, so
+                the section is hidden rather than shown permanently greyed
+                out. It reappears for anyone self-hosting with their own
+                Telegram API credentials, and stays visible if accounts
+                already exist so they never become unmanageable. */}
+            {(phoneAccountsEnabled || phoneAccounts.length > 0) && (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">Your Phone Accounts</h2>
+                  <AddPhoneAccountDialog
+                    locationId={session.locationId}
+                    disabled={!phoneAccountsEnabled}
+                    onAdded={(account) => setPhoneAccounts((prev) => [...prev, account])}
+                  />
+                </div>
+                <PhoneAccountList
+                  accounts={phoneAccounts}
+                  onToggleActive={handleTogglePhoneActive}
+                  onDelete={handleDeletePhoneAccount}
+                />
+              </>
+            )}
 
             <MessageActivity locationId={session.locationId} />
           </div>
