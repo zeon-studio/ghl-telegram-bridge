@@ -236,9 +236,9 @@ arrangement that makes sense for this feature.
 
 GHL requires public URLs for:
 
-- **Privacy Policy:** [your-domain.com/privacy](/privacy)
-- **Terms of Service:** [your-domain.com/terms](/terms)
-- **Support Email:** add your own support address here before submitting to the marketplace
+- **Privacy Policy:** https://hl-telegram.zeon.studio/privacy
+- **Terms of Service:** https://hl-telegram.zeon.studio/terms
+- **Support Email:** zeonstudiohq@gmail.com
 
 ### Scopes Required
 

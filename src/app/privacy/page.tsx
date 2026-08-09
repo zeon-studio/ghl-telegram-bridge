@@ -95,8 +95,14 @@ export default function PrivacyPage() {
             5. Contact Us
           </h2>
           <p>
-            If you have any questions about this Privacy Policy, please reach out through the
-            support channel listed in this app&apos;s Marketplace listing.
+            If you have any questions about this Privacy Policy, email us at{" "}
+            <a
+              href="mailto:zeonstudiohq@gmail.com"
+              className="text-primary hover:underline"
+            >
+              zeonstudiohq@gmail.com
+            </a>
+            .
           </p>
         </div>
       </div>
