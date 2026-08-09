@@ -242,22 +242,31 @@ GHL requires public URLs for:
 
 ### Scopes Required
 
-- `conversations.readonly`
-- `conversations.write`
-- `conversations/message.readonly`
-- `conversations/message.write`
-- `contacts.readonly`
-- `contacts.write`
-- `locations.readonly`
-- `medias.readonly`
-- `medias.write`
+One scope per API call the app actually makes — nothing else in the codebase touches the API:
 
-Note: `conversations.*` and `conversations/message.*` are separate scope groups in GHL —
-`conversations.write` is required to create a conversation (`POST /conversations/`), while
-`conversations/message.*` only covers messages within an existing conversation. Both groups must
-also be enabled in your app's Scopes configuration in the Marketplace Developer Portal, not just
-requested in code — and any location that authorized before this scope was added needs to
-reconnect (disconnect + "Connect Platform" again) to get a token with the new scope.
+| Scope | Call it authorizes |
+| --- | --- |
+| `contacts.write` | `contacts.createContact()` — `lib/ghl/contacts.ts`, `lib/ghl/phoneContacts.ts` |
+| `conversations.write` | Conversation auto-created by the inbound message post |
+| `conversations/message.write` | `POST /conversations/messages/inbound`, `updateMessageStatus()` |
+| `locations.readonly` | `GET /locations/{id}` on the OAuth callback |
+| `medias.write` | `POST /medias/upload-file` for inbound attachments |
+
+No read scopes beyond `locations.readonly` are requested: contact de-duplication is a local
+Prisma lookup on `ContactMapping`, and the retry path re-posts rather than reading message state,
+so nothing in the app ever reads back a contact, conversation, message, or media file.
+
+`conversations.*` and `conversations/message.*` are separate scope groups in GHL —
+`conversations.write` covers creating the conversation, while `conversations/message.*` only
+covers messages within an existing one.
+
+Two things bite when changing this list:
+
+- The same scopes must be enabled in the app's Scopes configuration in the Marketplace Developer
+  Portal, not just requested in `buildAuthorizationUrl()`. If the portal and the requested string
+  disagree, `/oauth/chooselocation` returns a 400.
+- Any location that authorized under a previous scope list keeps its old grant. It has to
+  reconnect (disconnect + "Connect Platform" again) to get a token carrying the new scopes.
 
 ---
 

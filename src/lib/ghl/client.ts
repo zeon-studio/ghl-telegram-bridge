@@ -217,16 +217,15 @@ export function buildAuthorizationUrl(state?: string): string {
     `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/callback`;
   const clientId = process.env.GHL_CLIENT_ID!;
 
+  // Minimum set — one scope per API call the app actually makes. Must stay in
+  // sync with the Scopes configuration in the Marketplace Developer Portal:
+  // if the portal and this string disagree, /oauth/chooselocation 400s.
   const scopes = [
-    "conversations.readonly",
-    "conversations.write",
-    "conversations/message.readonly",
-    "conversations/message.write",
-    "contacts.readonly",
-    "contacts.write",
-    "locations.readonly",
-    "medias.readonly",
-    "medias.write",
+    "contacts.write", // contacts.createContact() — lib/ghl/contacts.ts
+    "conversations.write", // conversation auto-created by the inbound message post
+    "conversations/message.write", // POST /conversations/messages/inbound + updateMessageStatus
+    "locations.readonly", // GET /locations/{id} on the OAuth callback
+    "medias.write", // POST /medias/upload-file for inbound attachments
   ].join(" ");
 
   const params = new URLSearchParams({
