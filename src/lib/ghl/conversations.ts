@@ -11,7 +11,7 @@ import axios from "axios";
 import FormData from "form-data";
 import { getGhlClient } from "./client";
 
-const CONVERSATION_PROVIDER_ID = process.env.GHL_CONVERSATION_PROVIDER_ID!;
+const CONVERSATION_PROVIDER_ID = process.env.GHL_CONVERSATION_PROVIDER_ID;
 
 // GHL's `type` value for a message sent through a custom Conversation
 // Provider. Confirmed via live testing this is neither "CUSTOM" (422 "type
@@ -52,6 +52,21 @@ export async function pushInboundMessage(params: {
   // conversation that's correctly associated with this provider from the
   // start. The SDK's typed addAnInboundMessage() doesn't expose a contactId
   // field, so this goes through the raw axios client instead.
+  // Without this, JSON.stringify silently drops `conversationProviderId` from
+  // the body below. GHL still accepts the message and shows it in the Inbox,
+  // but the conversation is created with no provider bound to it — so the
+  // composer offers only "Internal Comment" and replies can never reach
+  // Telegram. Fail loudly instead: a missing env var should not look like a
+  // working integration.
+  if (!CONVERSATION_PROVIDER_ID) {
+    throw new Error(
+      "GHL_CONVERSATION_PROVIDER_ID is not set. Inbound messages would create " +
+        "conversations with no Conversation Provider, leaving the Inbox with no " +
+        "way to reply. Set it from the Marketplace Developer Portal (App Settings " +
+        "> Conversation Providers) and redeploy.",
+    );
+  }
+
   const client = getGhlClient(params.accessToken);
   try {
     const resp = await client.post("/conversations/messages/inbound", {

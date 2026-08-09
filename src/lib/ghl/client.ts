@@ -217,15 +217,29 @@ export function buildAuthorizationUrl(state?: string): string {
     `${process.env.NEXT_PUBLIC_APP_URL}/api/auth/callback`;
   const clientId = process.env.GHL_CLIENT_ID!;
 
-  // Minimum set — one scope per API call the app actually makes. Must stay in
-  // sync with the Scopes configuration in the Marketplace Developer Portal:
-  // if the portal and this string disagree, /oauth/chooselocation 400s.
+  // Do not trim this list by reading the code for call sites: only five of
+  // these back a direct API call, but narrowing to those five broke the Inbox
+  // — inbound messages still landed while the composer offered nothing but
+  // "Internal Comment", i.e. the conversation came back with no usable reply
+  // channel. The `.readonly` halves are load-bearing beyond the calls the app
+  // makes itself. Same lesson as the original live test, which hit a 401
+  // "token is not authorized for this scope" on the conversations pair.
+  //
+  // Must stay in sync with the Scopes configuration in the Marketplace
+  // Developer Portal — if the portal and this string disagree,
+  // /oauth/chooselocation returns a 400. Changing it also requires every
+  // connected location to disconnect and reconnect; existing tokens keep
+  // whatever grant they were issued under.
   const scopes = [
-    "contacts.write", // contacts.createContact() — lib/ghl/contacts.ts
-    "conversations.write", // conversation auto-created by the inbound message post
-    "conversations/message.write", // POST /conversations/messages/inbound + updateMessageStatus
-    "locations.readonly", // GET /locations/{id} on the OAuth callback
-    "medias.write", // POST /medias/upload-file for inbound attachments
+    "conversations.readonly",
+    "conversations.write",
+    "conversations/message.readonly",
+    "conversations/message.write",
+    "contacts.readonly",
+    "contacts.write",
+    "locations.readonly",
+    "medias.readonly",
+    "medias.write",
   ].join(" ");
 
   const params = new URLSearchParams({

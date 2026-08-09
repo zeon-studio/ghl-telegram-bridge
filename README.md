@@ -242,19 +242,23 @@ GHL requires public URLs for:
 
 ### Scopes Required
 
-One scope per API call the app actually makes — nothing else in the codebase touches the API:
+- `conversations.readonly`
+- `conversations.write`
+- `conversations/message.readonly`
+- `conversations/message.write`
+- `contacts.readonly`
+- `contacts.write`
+- `locations.readonly`
+- `medias.readonly`
+- `medias.write`
 
-| Scope | Call it authorizes |
-| --- | --- |
-| `contacts.write` | `contacts.createContact()` — `lib/ghl/contacts.ts`, `lib/ghl/phoneContacts.ts` |
-| `conversations.write` | Conversation auto-created by the inbound message post |
-| `conversations/message.write` | `POST /conversations/messages/inbound`, `updateMessageStatus()` |
-| `locations.readonly` | `GET /locations/{id}` on the OAuth callback |
-| `medias.write` | `POST /medias/upload-file` for inbound attachments |
-
-No read scopes beyond `locations.readonly` are requested: contact de-duplication is a local
-Prisma lookup on `ContactMapping`, and the retry path re-posts rather than reading message state,
-so nothing in the app ever reads back a contact, conversation, message, or media file.
+Only five of these back a direct API call — `contacts.write`, `conversations.write`,
+`conversations/message.write`, `locations.readonly`, `medias.write`. **Do not trim the list to
+those five.** It was tried: inbound messages still arrived, but the Inbox composer offered only
+"Internal Comment" for the resulting conversations, with no channel to reply through. The
+`.readonly` halves are load-bearing beyond the calls this app makes itself. The original live
+test hit the same wall from the other direction, with a 401 "token is not authorized for this
+scope" on the conversations pair.
 
 `conversations.*` and `conversations/message.*` are separate scope groups in GHL —
 `conversations.write` covers creating the conversation, while `conversations/message.*` only
@@ -267,6 +271,7 @@ Two things bite when changing this list:
   disagree, `/oauth/chooselocation` returns a 400.
 - Any location that authorized under a previous scope list keeps its old grant. It has to
   reconnect (disconnect + "Connect Platform" again) to get a token carrying the new scopes.
+  A scope change that "didn't take" is usually a location still holding its old token.
 
 ---
 
