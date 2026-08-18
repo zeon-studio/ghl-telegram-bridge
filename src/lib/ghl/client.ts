@@ -44,6 +44,7 @@ export interface TokenSession {
   locationId: string;
   userId?: string;
   companyId?: string;
+  usesAgencyToken?: boolean;
   locationName?: string;
   email?: string;
   phone?: string;
@@ -56,9 +57,11 @@ export interface TokenResponse {
   refresh_token: string;
   expires_in: number;
   token_type: string;
+  userType?: string;
   locationId?: string;
   userId?: string;
   companyId?: string;
+  approvedLocations?: string[];
   scope?: string;
 }
 
@@ -82,6 +85,7 @@ async function refreshAccessToken(
       refresh_token: session.refreshToken,
       client_id: process.env.GHL_CLIENT_ID,
       client_secret: process.env.GHL_CLIENT_SECRET,
+      ...(session.usesAgencyToken ? { user_type: "Company" } : {}),
     }),
     {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -90,14 +94,21 @@ async function refreshAccessToken(
 
   const data = tokenResp.data;
 
+  const locationToken = session.usesAgencyToken
+    ? await exchangeAgencyTokenForLocationToken(
+        data.access_token,
+        session.companyId!,
+        session.locationId,
+      )
+    : undefined;
+
   const newSession: TokenSession = {
     ...session,
-    accessToken: data.access_token,
+    accessToken: locationToken?.accessToken ?? data.access_token,
     refreshToken: data.refresh_token,
-    expiresAt: Date.now() + data.expires_in * 1000,
+    expiresAt:
+      Date.now() + (locationToken?.expiresIn ?? data.expires_in) * 1000,
   };
-
-  // Save the new session to Supabase
   await sessionStorage.set(session.locationId, newSession);
 
   return newSession;
@@ -111,6 +122,7 @@ export const sessionStorage = {
       expiresAt: BigInt(session.expiresAt),
       userId: session.userId,
       companyId: session.companyId,
+      usesAgencyToken: session.usesAgencyToken ?? false,
       locationName: session.locationName,
       email: session.email,
       phone: session.phone,
@@ -148,6 +160,7 @@ export const sessionStorage = {
       locationId: row.locationId,
       userId: row.userId ?? undefined,
       companyId: row.companyId ?? undefined,
+      usesAgencyToken: row.usesAgencyToken,
       locationName: row.locationName ?? undefined,
       email: row.email ?? undefined,
       phone: row.phone ?? undefined,
@@ -160,7 +173,10 @@ export const sessionStorage = {
       try {
         session = await refreshAccessToken(session);
       } catch (err) {
-        console.error(`[Session] Failed to refresh token for location ${locationId}:`, err);
+        console.error(
+          `[Session] Failed to refresh token for location ${locationId}:`,
+          err,
+        );
         return undefined;
       }
     }
@@ -178,7 +194,9 @@ export const sessionStorage = {
 
   async keys(): Promise<string[]> {
     try {
-      const rows = await prisma.session.findMany({ select: { locationId: true } });
+      const rows = await prisma.session.findMany({
+        select: { locationId: true },
+      });
       return rows.map((r) => r.locationId);
     } catch (e) {
       console.error("[Session] Failed to list session keys:", e);
@@ -279,4 +297,31 @@ export async function exchangeToken(code: string): Promise<TokenResponse> {
   );
 
   return resp.data;
+}
+
+/** Exchanges an agency access token for a token scoped to one installed location. */
+export async function exchangeAgencyTokenForLocationToken(
+  agencyAccessToken: string,
+  companyId: string,
+  locationId: string,
+): Promise<{ accessToken: string; expiresIn: number }> {
+  const resp = await axios.post(
+    `${API_BASE}/oauth/locationToken`,
+    new URLSearchParams({ companyId, locationId }),
+    {
+      headers: {
+        Authorization: `Bearer ${agencyAccessToken}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+    },
+  );
+
+  if (!resp.data.access_token || !resp.data.expires_in) {
+    throw new Error("GHL did not return a location access token");
+  }
+
+  return {
+    accessToken: resp.data.access_token,
+    expiresIn: resp.data.expires_in,
+  };
 }

@@ -9,14 +9,17 @@
  * GET /api/auth/callback?code=...&locationId=...
  */
 
-import { NextRequest, NextResponse } from "next/server";
-import axios from "axios";
-import { exchangeToken, getGhlClient, sessionStorage } from "@/lib/ghl/client";
 import type { TokenSession } from "@/lib/ghl/client";
+import {
+  exchangeAgencyTokenForLocationToken,
+  exchangeToken,
+  getGhlClient,
+  sessionStorage,
+} from "@/lib/ghl/client";
+import axios from "axios";
+import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-
-
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = request.nextUrl;
@@ -28,7 +31,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   if (!code) {
     return NextResponse.json(
       { error: "Missing authorization code" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -37,7 +40,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   if (savedState && returnedState && savedState !== returnedState) {
     return NextResponse.json(
       { error: "OAuth state mismatch — possible CSRF attack" },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
@@ -47,38 +50,62 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
     // ── Step 2: Resolve locationId ────────────────────────────────────────────────
     const resolvedLocationId =
-      locationId ?? tokenData.locationId ?? "unknown";
+      locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
+    const usesAgencyToken = Boolean(
+      tokenData.companyId && !tokenData.locationId,
+    );
+
+    if (!resolvedLocationId) {
+      return NextResponse.json(
+        {
+          error: "No sub-account was authorized for this installation",
+          details:
+            "Install the app for at least one sub-account, then authorize it again.",
+        },
+        { status: 400 },
+      );
+    }
+
+    const locationToken = usesAgencyToken
+      ? await exchangeAgencyTokenForLocationToken(
+          tokenData.access_token,
+          tokenData.companyId!,
+          resolvedLocationId,
+        )
+      : undefined;
 
     // ── Step 3: Fetch Location Details ───────────────────────────────────────────
     let locationDetails = {};
-    if (resolvedLocationId !== "unknown") {
-      try {
-        const client = getGhlClient(tokenData.access_token);
-        const locResp = await client.get(`/locations/${resolvedLocationId}`);
-        const locData = locResp.data?.location;
-        if (locData) {
-          locationDetails = {
-            locationName: locData.name,
-            email: locData.email,
-            phone: locData.phone,
-            address: locData.address,
-            city: locData.city,
-            country: locData.country,
-          };
-        }
-      } catch (err) {
-        console.warn("[GHL Callback] Failed to fetch location details:", err);
+    try {
+      const client = getGhlClient(
+        locationToken?.accessToken ?? tokenData.access_token,
+      );
+      const locResp = await client.get(`/locations/${resolvedLocationId}`);
+      const locData = locResp.data?.location;
+      if (locData) {
+        locationDetails = {
+          locationName: locData.name,
+          email: locData.email,
+          phone: locData.phone,
+          address: locData.address,
+          city: locData.city,
+          country: locData.country,
+        };
       }
+    } catch (err) {
+      console.warn("[GHL Callback] Failed to fetch location details:", err);
     }
 
     // ── Persist session ───────────────────────────────────────────────────
     const session: TokenSession = {
-      accessToken: tokenData.access_token,
+      accessToken: locationToken?.accessToken ?? tokenData.access_token,
       refreshToken: tokenData.refresh_token,
-      expiresAt: Date.now() + tokenData.expires_in * 1000,
+      expiresAt:
+        Date.now() + (locationToken?.expiresIn ?? tokenData.expires_in) * 1000,
       locationId: resolvedLocationId,
       userId: tokenData.userId,
       companyId: tokenData.companyId,
+      usesAgencyToken,
       ...locationDetails,
     };
 
@@ -91,7 +118,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // the browser off the tunnel entirely.
     const dashboardUrl = new URL(
       `/dashboard?locationId=${resolvedLocationId}`,
-      process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin
+      process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin,
     );
 
     const response = NextResponse.redirect(dashboardUrl);
@@ -99,20 +126,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return response;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      console.error("[GHL Callback] Error:", error.response?.data ?? error.message);
+      console.error(
+        "[GHL Callback] Error:",
+        error.response?.data ?? error.message,
+      );
       return NextResponse.json(
         {
           error: "Authentication failed",
           details: error.response?.data,
         },
-        { status: error.response?.status || 500 }
+        { status: error.response?.status || 500 },
       );
     }
     const err = error as Error;
     console.error("[GHL Callback] Error:", err.message);
     return NextResponse.json(
       { error: "Authentication failed", details: err.message },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }

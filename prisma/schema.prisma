@@ -20,6 +20,7 @@ model Session {
   expiresAt    BigInt   @map("expires_at")
   userId       String?  @map("user_id")
   companyId    String?  @map("company_id")
+  usesAgencyToken Boolean @default(false) @map("uses_agency_token")
   locationName String?  @map("location_name")
   email        String?
   phone        String?
