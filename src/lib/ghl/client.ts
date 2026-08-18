@@ -325,3 +325,36 @@ export async function exchangeAgencyTokenForLocationToken(
     expiresIn: resp.data.expires_in,
   };
 }
+
+/** Lists locations where this Marketplace app is installed for an agency token. */
+export async function getAgencyInstalledLocationIds(
+  agencyAccessToken: string,
+  companyId: string,
+): Promise<string[]> {
+  const clientId = process.env.GHL_CLIENT_ID;
+  const appId = process.env.GHL_APP_ID ?? clientId?.split("-")[0];
+
+  if (!appId) {
+    throw new Error("Missing GHL_APP_ID or GHL_CLIENT_ID");
+  }
+
+  const resp = await axios.get(`${API_BASE}/oauth/installedLocations`, {
+    headers: { Authorization: `Bearer ${agencyAccessToken}` },
+    params: {
+      companyId,
+      appId,
+      isInstalled: true,
+      limit: 100,
+    },
+  });
+
+  return (resp.data.locations ?? [])
+    .filter(
+      (location: { _id?: string; isInstalled?: boolean }) =>
+        location.isInstalled !== false,
+    )
+    .map((location: { _id?: string }) => location._id)
+    .filter((locationId: string | undefined): locationId is string =>
+      Boolean(locationId),
+    );
+}

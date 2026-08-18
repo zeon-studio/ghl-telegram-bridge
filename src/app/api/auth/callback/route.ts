@@ -13,6 +13,7 @@ import type { TokenSession } from "@/lib/ghl/client";
 import {
   exchangeAgencyTokenForLocationToken,
   exchangeToken,
+  getAgencyInstalledLocationIds,
   getGhlClient,
   sessionStorage,
 } from "@/lib/ghl/client";
@@ -49,18 +50,26 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const tokenData = await exchangeToken(code);
 
     // ── Step 2: Resolve locationId ────────────────────────────────────────────────
-    const resolvedLocationId =
-      locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
     const usesAgencyToken = Boolean(
       tokenData.companyId && !tokenData.locationId,
     );
+    const oauthLocationId =
+      locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
+    const installedLocationIds =
+      !oauthLocationId && usesAgencyToken && tokenData.companyId
+        ? await getAgencyInstalledLocationIds(
+            tokenData.access_token,
+            tokenData.companyId,
+          )
+        : [];
+    const resolvedLocationId = oauthLocationId ?? installedLocationIds[0];
 
     if (!resolvedLocationId) {
       return NextResponse.json(
         {
           error: "No sub-account was authorized for this installation",
           details:
-            "Install the app for at least one sub-account, then authorize it again.",
+            "Install the app for at least one sub-account, then authorize it again. If it is already installed, set GHL_APP_ID to the Marketplace app ID.",
         },
         { status: 400 },
       );
