@@ -56,13 +56,22 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const oauthLocationId =
       locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
     const installedLocationIds =
-      !oauthLocationId && usesAgencyToken && tokenData.companyId
+      usesAgencyToken && tokenData.companyId
         ? await getAgencyInstalledLocationIds(
             tokenData.access_token,
             tokenData.companyId,
           )
         : [];
     const resolvedLocationId = oauthLocationId ?? installedLocationIds[0];
+    const sessionLocationIds = usesAgencyToken
+      ? [
+          ...new Set(
+            [...installedLocationIds, oauthLocationId].filter(
+              (candidate): candidate is string => Boolean(candidate),
+            ),
+          ),
+        ]
+      : [resolvedLocationId];
 
     if (!resolvedLocationId) {
       return NextResponse.json(
@@ -75,50 +84,54 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    const locationToken = usesAgencyToken
-      ? await exchangeAgencyTokenForLocationToken(
-          tokenData.access_token,
-          tokenData.companyId!,
-          resolvedLocationId,
-        )
-      : undefined;
+    // ── Step 3: Persist one location-scoped session per installation ─────────────
+    await Promise.all(
+      sessionLocationIds.map(async (sessionLocationId) => {
+        const locationToken = usesAgencyToken
+          ? await exchangeAgencyTokenForLocationToken(
+              tokenData.access_token,
+              tokenData.companyId!,
+              sessionLocationId,
+            )
+          : undefined;
 
-    // ── Step 3: Fetch Location Details ───────────────────────────────────────────
-    let locationDetails = {};
-    try {
-      const client = getGhlClient(
-        locationToken?.accessToken ?? tokenData.access_token,
-      );
-      const locResp = await client.get(`/locations/${resolvedLocationId}`);
-      const locData = locResp.data?.location;
-      if (locData) {
-        locationDetails = {
-          locationName: locData.name,
-          email: locData.email,
-          phone: locData.phone,
-          address: locData.address,
-          city: locData.city,
-          country: locData.country,
+        let locationDetails = {};
+        try {
+          const client = getGhlClient(
+            locationToken?.accessToken ?? tokenData.access_token,
+          );
+          const locResp = await client.get(`/locations/${sessionLocationId}`);
+          const locData = locResp.data?.location;
+          if (locData) {
+            locationDetails = {
+              locationName: locData.name,
+              email: locData.email,
+              phone: locData.phone,
+              address: locData.address,
+              city: locData.city,
+              country: locData.country,
+            };
+          }
+        } catch (err) {
+          console.warn("[GHL Callback] Failed to fetch location details:", err);
+        }
+
+        const session: TokenSession = {
+          accessToken: locationToken?.accessToken ?? tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          expiresAt:
+            Date.now() +
+            (locationToken?.expiresIn ?? tokenData.expires_in) * 1000,
+          locationId: sessionLocationId,
+          userId: tokenData.userId,
+          companyId: tokenData.companyId,
+          usesAgencyToken,
+          ...locationDetails,
         };
-      }
-    } catch (err) {
-      console.warn("[GHL Callback] Failed to fetch location details:", err);
-    }
 
-    // ── Persist session ───────────────────────────────────────────────────
-    const session: TokenSession = {
-      accessToken: locationToken?.accessToken ?? tokenData.access_token,
-      refreshToken: tokenData.refresh_token,
-      expiresAt:
-        Date.now() + (locationToken?.expiresIn ?? tokenData.expires_in) * 1000,
-      locationId: resolvedLocationId,
-      userId: tokenData.userId,
-      companyId: tokenData.companyId,
-      usesAgencyToken,
-      ...locationDetails,
-    };
-
-    await sessionStorage.set(resolvedLocationId, session);
+        await sessionStorage.set(sessionLocationId, session);
+      }),
+    );
 
     // ── Clear state cookie & redirect to dashboard ────────────────────────
     // Use NEXT_PUBLIC_APP_URL rather than request.nextUrl.origin — behind a
