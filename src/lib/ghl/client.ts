@@ -311,6 +311,7 @@ export async function exchangeAgencyTokenForLocationToken(
     {
       headers: {
         Authorization: `Bearer ${agencyAccessToken}`,
+        Version: "2021-07-28",
         "Content-Type": "application/x-www-form-urlencoded",
       },
     },
@@ -339,7 +340,10 @@ export async function getAgencyInstalledLocationIds(
   }
 
   const resp = await axios.get(`${API_BASE}/oauth/installedLocations`, {
-    headers: { Authorization: `Bearer ${agencyAccessToken}` },
+    headers: {
+      Authorization: `Bearer ${agencyAccessToken}`,
+      Version: "2021-07-28",
+    },
     params: {
       companyId,
       appId,
