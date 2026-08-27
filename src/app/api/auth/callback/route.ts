@@ -11,6 +11,7 @@
 
 import type { TokenSession } from "@/lib/ghl/client";
 import {
+  agencySessionStorage,
   exchangeAgencyTokenForLocationToken,
   exchangeToken,
   getAgencyInstalledLocationIds,
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = request.nextUrl;
   const code = searchParams.get("code");
   const returnedState = searchParams.get("state");
-  const locationId = searchParams.get("locationId"); // GHL passes this
+  const locationId = searchParams.get("locationId"); // GHL passes this for location-scoped auth
 
   // ── Validate presence of code ────────────────────────────────────────────
   if (!code) {
@@ -49,97 +50,158 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     // ── Step 1: Exchange code for tokens ──────────────────────────────────────────
     const tokenData = await exchangeToken(code);
 
-    // ── Step 2: Resolve locationId ────────────────────────────────────────────────
+    // ── Step 2: Handle Agency vs Location Installation ────────────────────────────
     const usesAgencyToken = Boolean(
       tokenData.companyId && !tokenData.locationId,
     );
-    const oauthLocationId =
-      locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
-    const installedLocationIds =
-      usesAgencyToken && tokenData.companyId
-        ? await getAgencyInstalledLocationIds(
-            tokenData.access_token,
-            tokenData.companyId,
-          )
-        : [];
-    const resolvedLocationId = oauthLocationId ?? installedLocationIds[0];
-    const sessionLocationIds = usesAgencyToken
-      ? [
-          ...new Set(
-            [...installedLocationIds, oauthLocationId].filter(
-              (candidate): candidate is string => Boolean(candidate),
-            ),
+
+    if (usesAgencyToken && tokenData.companyId) {
+      // 1. Save Agency Session
+      await agencySessionStorage.set(tokenData.companyId, {
+        companyId: tokenData.companyId,
+        accessToken: tokenData.access_token,
+        refreshToken: tokenData.refresh_token,
+        expiresAt: Date.now() + tokenData.expires_in * 1000,
+        userId: tokenData.userId,
+      });
+
+      // 2. Discover installed/accessible sub-accounts
+      const oauthLocationId =
+        locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
+      const installedLocationIds = await getAgencyInstalledLocationIds(
+        tokenData.access_token,
+        tokenData.companyId,
+      );
+
+      const sessionLocationIds = [
+        ...new Set(
+          [...installedLocationIds, oauthLocationId].filter(
+            (candidate): candidate is string => Boolean(candidate),
           ),
-        ]
-      : [resolvedLocationId];
+        ),
+      ];
+
+      // 3. Persist location sessions for any discovered locations
+      if (sessionLocationIds.length > 0) {
+        await Promise.all(
+          sessionLocationIds.map(async (sessionLocationId) => {
+            try {
+              const locationToken = await exchangeAgencyTokenForLocationToken(
+                tokenData.access_token,
+                tokenData.companyId!,
+                sessionLocationId,
+              );
+
+              let locationDetails = {};
+              try {
+                const client = getGhlClient(locationToken.accessToken);
+                const locResp = await client.get(
+                  `/locations/${sessionLocationId}`,
+                );
+                const locData = locResp.data?.location;
+                if (locData) {
+                  locationDetails = {
+                    locationName: locData.name,
+                    email: locData.email,
+                    phone: locData.phone,
+                    address: locData.address,
+                    city: locData.city,
+                    country: locData.country,
+                  };
+                }
+              } catch (err) {
+                console.warn(
+                  `[GHL Callback] Failed to fetch location details for ${sessionLocationId}:`,
+                  err,
+                );
+              }
+
+              const session: TokenSession = {
+                accessToken: locationToken.accessToken,
+                refreshToken: tokenData.refresh_token,
+                expiresAt:
+                  Date.now() + locationToken.expiresIn * 1000,
+                locationId: sessionLocationId,
+                userId: tokenData.userId,
+                companyId: tokenData.companyId,
+                usesAgencyToken: true,
+                ...locationDetails,
+              };
+
+              await sessionStorage.set(sessionLocationId, session);
+            } catch (err) {
+              console.warn(
+                `[GHL Callback] Could not initialize session for location ${sessionLocationId}:`,
+                err,
+              );
+            }
+          }),
+        );
+      }
+
+      // 4. Redirect: to resolved location if available, otherwise to agency dashboard
+      const targetUrl = sessionLocationIds[0]
+        ? `/dashboard?locationId=${encodeURIComponent(sessionLocationIds[0])}`
+        : `/dashboard?companyId=${encodeURIComponent(tokenData.companyId)}&installed=agency`;
+
+      const redirectUrl = new URL(
+        targetUrl,
+        process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin,
+      );
+
+      const response = NextResponse.redirect(redirectUrl);
+      response.cookies.delete("ghl_oauth_state");
+      return response;
+    }
+
+    // ── Direct Location Installation ──────────────────────────────────────────────
+    const resolvedLocationId =
+      locationId ?? tokenData.locationId ?? tokenData.approvedLocations?.[0];
 
     if (!resolvedLocationId) {
       return NextResponse.json(
         {
           error: "No sub-account was authorized for this installation",
-          details:
-            "Install the app for at least one sub-account, then authorize it again. If it is already installed, set GHL_APP_ID to the Marketplace app ID.",
+          details: "Please install or authorize the app from a sub-account.",
         },
         { status: 400 },
       );
     }
 
-    // ── Step 3: Persist one location-scoped session per installation ─────────────
-    await Promise.all(
-      sessionLocationIds.map(async (sessionLocationId) => {
-        const locationToken = usesAgencyToken
-          ? await exchangeAgencyTokenForLocationToken(
-              tokenData.access_token,
-              tokenData.companyId!,
-              sessionLocationId,
-            )
-          : undefined;
-
-        let locationDetails = {};
-        try {
-          const client = getGhlClient(
-            locationToken?.accessToken ?? tokenData.access_token,
-          );
-          const locResp = await client.get(`/locations/${sessionLocationId}`);
-          const locData = locResp.data?.location;
-          if (locData) {
-            locationDetails = {
-              locationName: locData.name,
-              email: locData.email,
-              phone: locData.phone,
-              address: locData.address,
-              city: locData.city,
-              country: locData.country,
-            };
-          }
-        } catch (err) {
-          console.warn("[GHL Callback] Failed to fetch location details:", err);
-        }
-
-        const session: TokenSession = {
-          accessToken: locationToken?.accessToken ?? tokenData.access_token,
-          refreshToken: tokenData.refresh_token,
-          expiresAt:
-            Date.now() +
-            (locationToken?.expiresIn ?? tokenData.expires_in) * 1000,
-          locationId: sessionLocationId,
-          userId: tokenData.userId,
-          companyId: tokenData.companyId,
-          usesAgencyToken,
-          ...locationDetails,
+    let locationDetails = {};
+    try {
+      const client = getGhlClient(tokenData.access_token);
+      const locResp = await client.get(`/locations/${resolvedLocationId}`);
+      const locData = locResp.data?.location;
+      if (locData) {
+        locationDetails = {
+          locationName: locData.name,
+          email: locData.email,
+          phone: locData.phone,
+          address: locData.address,
+          city: locData.city,
+          country: locData.country,
         };
+      }
+    } catch (err) {
+      console.warn("[GHL Callback] Failed to fetch location details:", err);
+    }
 
-        await sessionStorage.set(sessionLocationId, session);
-      }),
-    );
+    const session: TokenSession = {
+      accessToken: tokenData.access_token,
+      refreshToken: tokenData.refresh_token,
+      expiresAt: Date.now() + tokenData.expires_in * 1000,
+      locationId: resolvedLocationId,
+      userId: tokenData.userId,
+      companyId: tokenData.companyId,
+      usesAgencyToken: false,
+      ...locationDetails,
+    };
 
-    // ── Clear state cookie & redirect to dashboard ────────────────────────
-    // Use NEXT_PUBLIC_APP_URL rather than request.nextUrl.origin — behind a
-    // dev tunnel (ngrok, tunnelmole, etc.) the local server sees the request
-    // as arriving at localhost, not the public tunnel URL, and would redirect
-    // the browser off the tunnel entirely.
+    await sessionStorage.set(resolvedLocationId, session);
+
     const dashboardUrl = new URL(
-      `/dashboard?locationId=${resolvedLocationId}`,
+      `/dashboard?locationId=${encodeURIComponent(resolvedLocationId)}`,
       process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin,
     );
 

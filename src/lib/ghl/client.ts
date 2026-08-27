@@ -65,11 +65,132 @@ export interface TokenResponse {
   scope?: string;
 }
 
+export interface AgencyTokenSession {
+  companyId: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // Unix ms timestamp
+  userId?: string;
+}
+
 // ─── Prisma Session Storage ──────────────────────────────────────────────────
 
 import { prisma } from "../prisma";
 
 const GHL_API_BASE = API_BASE;
+
+async function refreshAgencyAccessToken(
+  session: AgencyTokenSession,
+): Promise<AgencyTokenSession> {
+  if (!process.env.GHL_CLIENT_ID || !process.env.GHL_CLIENT_SECRET) {
+    throw new Error("Missing GHL credentials for agency token refresh");
+  }
+
+  const tokenResp = await axios.post(
+    `${GHL_API_BASE}/oauth/token`,
+    new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: session.refreshToken,
+      client_id: process.env.GHL_CLIENT_ID,
+      client_secret: process.env.GHL_CLIENT_SECRET,
+      user_type: "Company",
+    }),
+    {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    },
+  );
+
+  const data = tokenResp.data;
+
+  const newSession: AgencyTokenSession = {
+    companyId: session.companyId,
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    expiresAt: Date.now() + (data.expires_in ?? 86400) * 1000,
+    userId: session.userId ?? data.userId,
+  };
+  await agencySessionStorage.set(session.companyId, newSession);
+
+  return newSession;
+}
+
+export const agencySessionStorage = {
+  async set(companyId: string, session: AgencyTokenSession): Promise<void> {
+    const data = {
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresAt: BigInt(session.expiresAt),
+      userId: session.userId,
+    };
+
+    try {
+      await prisma.agencySession.upsert({
+        where: { companyId },
+        create: { companyId, ...data },
+        update: data,
+      });
+    } catch (e) {
+      console.error(`[AgencySession] Failed to save session for company ${companyId}:`, e);
+    }
+  },
+
+  async get(companyId: string): Promise<AgencyTokenSession | undefined> {
+    let row;
+    try {
+      row = await prisma.agencySession.findUnique({ where: { companyId } });
+    } catch (e) {
+      console.error(`[AgencySession] Failed to fetch session for company ${companyId}:`, e);
+      return undefined;
+    }
+
+    if (!row) return undefined;
+
+    let session: AgencyTokenSession = {
+      companyId: row.companyId,
+      accessToken: row.accessToken,
+      refreshToken: row.refreshToken,
+      expiresAt: Number(row.expiresAt),
+      userId: row.userId ?? undefined,
+    };
+
+    if (Date.now() + 5 * 60 * 1000 >= session.expiresAt) {
+      try {
+        session = await refreshAgencyAccessToken(session);
+      } catch (err) {
+        console.error(
+          `[AgencySession] Failed to refresh token for company ${companyId}:`,
+          err,
+        );
+        return undefined;
+      }
+    }
+
+    return session;
+  },
+
+  async findFirst(): Promise<AgencyTokenSession | undefined> {
+    let row;
+    try {
+      row = await prisma.agencySession.findFirst({
+        orderBy: { updatedAt: "desc" },
+      });
+    } catch (e) {
+      console.error("[AgencySession] Failed to fetch first agency session:", e);
+      return undefined;
+    }
+
+    if (!row) return undefined;
+    return this.get(row.companyId);
+  },
+
+  async delete(companyId: string): Promise<void> {
+    try {
+      await prisma.agencySession.delete({ where: { companyId } });
+    } catch (e) {
+      console.error(`[AgencySession] Failed to delete session for company ${companyId}:`, e);
+    }
+  },
+};
 
 async function refreshAccessToken(
   session: TokenSession,
@@ -151,7 +272,56 @@ export const sessionStorage = {
       return undefined;
     }
 
-    if (!row) return undefined;
+    if (!row) {
+      // Check if there is an active Agency session that can mint a location token
+      const agencySession = await agencySessionStorage.findFirst();
+      if (agencySession) {
+        try {
+          const locationToken = await exchangeAgencyTokenForLocationToken(
+            agencySession.accessToken,
+            agencySession.companyId,
+            locationId,
+          );
+
+          let locationDetails = {};
+          try {
+            const client = getGhlClient(locationToken.accessToken);
+            const locResp = await client.get(`/locations/${locationId}`);
+            const locData = locResp.data?.location;
+            if (locData) {
+              locationDetails = {
+                locationName: locData.name,
+                email: locData.email,
+                phone: locData.phone,
+                address: locData.address,
+                city: locData.city,
+                country: locData.country,
+              };
+            }
+          } catch (err) {
+            console.warn(`[Session] Failed to fetch details for location ${locationId}:`, err);
+          }
+
+          const mintedSession: TokenSession = {
+            accessToken: locationToken.accessToken,
+            refreshToken: agencySession.refreshToken,
+            expiresAt: Date.now() + locationToken.expiresIn * 1000,
+            locationId,
+            companyId: agencySession.companyId,
+            usesAgencyToken: true,
+            userId: agencySession.userId,
+            ...locationDetails,
+          };
+
+          await this.set(locationId, mintedSession);
+          return mintedSession;
+        } catch (mintErr) {
+          console.warn(`[Session] Could not mint location token from agency for ${locationId}:`, mintErr);
+          return undefined;
+        }
+      }
+      return undefined;
+    }
 
     let session: TokenSession = {
       accessToken: row.accessToken,
@@ -332,33 +502,58 @@ export async function getAgencyInstalledLocationIds(
   agencyAccessToken: string,
   companyId: string,
 ): Promise<string[]> {
-  const clientId = process.env.GHL_CLIENT_ID;
-  const appId = process.env.GHL_APP_ID ?? clientId?.split("-")[0];
+  const appId = process.env.GHL_APP_ID;
 
-  if (!appId) {
-    throw new Error("Missing GHL_APP_ID or GHL_CLIENT_ID");
+  if (appId) {
+    try {
+      const resp = await axios.get(`${API_BASE}/oauth/installedLocations`, {
+        headers: {
+          Authorization: `Bearer ${agencyAccessToken}`,
+          Version: "2021-07-28",
+        },
+        params: {
+          companyId,
+          appId,
+          isInstalled: true,
+          limit: 100,
+        },
+      });
+
+      const ids = (resp.data.locations ?? [])
+        .filter(
+          (location: { _id?: string; isInstalled?: boolean }) =>
+            location.isInstalled !== false,
+        )
+        .map((location: { _id?: string }) => location._id)
+        .filter((locationId: string | undefined): locationId is string =>
+          Boolean(locationId),
+        );
+
+      if (ids.length > 0) return ids;
+    } catch (e) {
+      console.warn("[GHL Client] installedLocations check returned an error:", e);
+    }
   }
 
-  const resp = await axios.get(`${API_BASE}/oauth/installedLocations`, {
-    headers: {
-      Authorization: `Bearer ${agencyAccessToken}`,
-      Version: "2021-07-28",
-    },
-    params: {
-      companyId,
-      appId,
-      isInstalled: true,
-      limit: 100,
-    },
-  });
+  // Fallback: search locations accessible under this agency token
+  try {
+    const locResp = await axios.get(`${API_BASE}/locations/search`, {
+      headers: {
+        Authorization: `Bearer ${agencyAccessToken}`,
+        Version: "2021-07-28",
+        Accept: "application/json",
+      },
+      params: {
+        companyId,
+        limit: 100,
+      },
+    });
 
-  return (resp.data.locations ?? [])
-    .filter(
-      (location: { _id?: string; isInstalled?: boolean }) =>
-        location.isInstalled !== false,
-    )
-    .map((location: { _id?: string }) => location._id)
-    .filter((locationId: string | undefined): locationId is string =>
-      Boolean(locationId),
-    );
+    return (locResp.data.locations ?? [])
+      .map((loc: { id?: string; _id?: string }) => loc.id ?? loc._id)
+      .filter((id: string | undefined): id is string => Boolean(id));
+  } catch (err) {
+    console.warn("[GHL Client] locations/search fallback returned an error:", err);
+    return [];
+  }
 }

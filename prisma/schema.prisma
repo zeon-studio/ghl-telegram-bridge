@@ -33,6 +33,18 @@ model Session {
   @@map("sessions")
 }
 
+model AgencySession {
+  companyId    String   @id @map("company_id")
+  accessToken  String   @map("access_token")
+  refreshToken String   @map("refresh_token")
+  expiresAt    BigInt   @map("expires_at")
+  userId       String?  @map("user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("agency_sessions")
+}
+
 model TelegramBot {
   id            String   @id @default(cuid())
   locationId    String   @map("location_id")

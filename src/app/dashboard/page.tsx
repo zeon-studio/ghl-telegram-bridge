@@ -9,6 +9,7 @@
 import { useEffect, useState } from "react";
 import { AddBotDialog } from "./components/AddBotDialog";
 import { AddPhoneAccountDialog } from "./components/AddPhoneAccountDialog";
+import { AgencyDashboard } from "./components/AgencyDashboard";
 import { BotList } from "./components/BotList";
 import { PhoneAccountList } from "./components/PhoneAccountList";
 import { DashboardHeader } from "./components/DashboardHeader";
@@ -18,6 +19,7 @@ import { GHLSession, TelegramBot, TelegramPhoneAccount } from "./types";
 
 export default function DashboardPage() {
   const [session, setSession] = useState<GHLSession | null>(null);
+  const [isAgency, setIsAgency] = useState(false);
   const [bots, setBots] = useState<TelegramBot[]>([]);
   const [phoneAccounts, setPhoneAccounts] = useState<TelegramPhoneAccount[]>([]);
   const [phoneAccountsEnabled, setPhoneAccountsEnabled] = useState(false);
@@ -29,28 +31,80 @@ export default function DashboardPage() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     let locationId = params.get("locationId");
+    let companyId = params.get("companyId");
 
     if (!locationId) {
-      // localStorage can throw inside a cross-origin iframe (GHL embeds this
-      // page) when third-party storage access is restricted — the URL query
-      // param is the primary, always-available source on every real load.
       try {
         locationId = localStorage.getItem("ghl_location_id");
       } catch {
-        // ignore — fall through with no locationId
+        // ignore — fall through
       }
     }
 
+    if (!companyId) {
+      try {
+        companyId = localStorage.getItem("ghl_company_id");
+      } catch {
+        // ignore
+      }
+    }
+
+    // ── Agency Mode ────────────────────────────────────────────────────────
+    if (!locationId && companyId) {
+      try {
+        localStorage.setItem("ghl_company_id", companyId);
+      } catch {
+        // non-fatal
+      }
+
+      setIsAgency(true);
+      fetch(`/api/session?companyId=${encodeURIComponent(companyId)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.session) {
+            setSession({
+              locationId: "",
+              userId: data.session.userId ?? "agency_user",
+              companyId: data.session.companyId ?? companyId as string,
+            });
+          } else {
+            setSession({
+              locationId: "",
+              userId: "agency_user",
+              companyId: companyId as string,
+            });
+          }
+        })
+        .catch(() => {
+          setSession({
+            locationId: "",
+            userId: "agency_user",
+            companyId: companyId as string,
+          });
+        })
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    // ── Sub-Account Mode ───────────────────────────────────────────────────
     if (!locationId) {
-      setErrorMsg("Could not obtain location context. Ensure the page is opened from within the CRM.");
-      setLoading(false);
+      // Check if there is an active agency session before showing error
+      fetch("/api/session")
+        .then((res) => res.json())
+        .then(() => {
+          setErrorMsg("Could not obtain location context. Ensure the page is opened from within the CRM.");
+        })
+        .catch(() => {
+          setErrorMsg("Could not obtain location context. Ensure the page is opened from within the CRM.");
+        })
+        .finally(() => setLoading(false));
       return;
     }
 
     try {
       localStorage.setItem("ghl_location_id", locationId);
     } catch {
-      // non-fatal — we already have locationId from this load's URL
+      // non-fatal
     }
 
     fetch(`/api/session?locationId=${encodeURIComponent(locationId)}`)
@@ -132,6 +186,8 @@ export default function DashboardPage() {
           <p className="text-sm text-muted-foreground text-center py-10">Loading…</p>
         ) : errorMsg ? (
           <p className="text-sm text-destructive text-center py-10">{errorMsg}</p>
+        ) : isAgency ? (
+          <AgencyDashboard companyId={session?.companyId} userId={session?.userId} />
         ) : session ? (
           <div className="flex flex-col gap-6 w-full">
             <Onboarding />
